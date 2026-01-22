@@ -1,5 +1,7 @@
-// This program computer the sum of two N-element vectors using unified memory
-// By: Nick from CoffeeBeforeArch
+// This program computes the sum of two N-element vectors using unified memory
+// Optimized Logic for Data Migration and Hints
+// By: Nick from CoffeeBeforeArch & Gem_GPU
+// Updated by: ZDSJTU
 
 #include <stdio.h>
 #include <cassert>
@@ -8,75 +10,106 @@
 using std::cout;
 
 // CUDA kernel for vector addition
-// No change when using CUDA unified memory
-__global__ void vectorAdd(int *a, int *b, int *c, int N) {
-  // Calculate global thread thread ID
+__global__ void vectorAdd(const int *a, const int *b, int *c, int N) {
   int tid = (blockDim.x * blockIdx.x) + threadIdx.x;
-
-  // Boundary check
   if (tid < N) {
     c[tid] = a[tid] + b[tid];
   }
 }
 
 int main() {
-  // Array size of 2^16 (65536 elements)
+  // 1. Setup Parameters
   const int N = 1 << 16;
   size_t bytes = N * sizeof(int);
+  int device_id = 0;
+  
+  // Get the actual GPU device ID
+  // It's good practice not to assume ID is 0, though it usually is.
+  cudaGetDevice(&device_id);
 
-  // Declare unified memory pointers
+  // 2. Allocate Unified Memory
+  // Pointers a, b, c are valid on both Host and Device.
   int *a, *b, *c;
-
-  // Allocation memory for these pointers
   cudaMallocManaged(&a, bytes);
   cudaMallocManaged(&b, bytes);
   cudaMallocManaged(&c, bytes);
-  
-  // Get the device ID for prefetching calls
-  int id = cudaGetDevice(&id);
 
-  // Set some hints about the data and do some prefetching
-  cudaMemAdvise(a, bytes, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId);
-  cudaMemAdvise(b, bytes, cudaMemAdviseSetPreferredLocation, cudaCpuDeviceId);
-  cudaMemPrefetchAsync(c, bytes, id);
-
-  // Initialize vectors
+  // =============================================================
+  // PHASE 1: Initialization (CPU Side)
+  // =============================================================
+  // Concept: "First Touch". When CPU writes to these addresses, 
+  // the driver creates the physical pages in CPU RAM (System Memory).
+  // No prefetch needed here because we are already on the CPU.
   for (int i = 0; i < N; i++) {
     a[i] = rand() % 100;
     b[i] = rand() % 100;
+    // c[i] doesn't need init, it will be overwritten.
   }
+
+  // =============================================================
+  // PHASE 2: Optimization for GPU Execution (The "Handoff")
+  // =============================================================
   
-  // Pre-fetch 'a' and 'b' arrays to the specified device (GPU)
-  cudaMemAdvise(a, bytes, cudaMemAdviseSetReadMostly, id);
-  cudaMemAdvise(b, bytes, cudaMemAdviseSetReadMostly, id);
-  cudaMemPrefetchAsync(a, bytes, id);
-  cudaMemPrefetchAsync(b, bytes, id);
-  
-  // Threads per CTA (1024 threads per CTA)
+  // LOGIC 1: Data Migration (Prefetch) -> "Move data WHERE it is needed"
+  // We are about to launch a kernel on the GPU.
+  // 'a' and 'b' are INPUTS: GPU will read them heavily.
+  // 'c' is OUTPUT: GPU will write to it.
+  // Therefore, we move ALL of them to the GPU memory (VRAM) to maximize bandwidth.
+  // If we don't do this, the GPU will trigger "Page Faults" one by one, which is slow.
+  cudaMemPrefetchAsync(a, bytes, device_id);
+  cudaMemPrefetchAsync(b, bytes, device_id);
+  cudaMemPrefetchAsync(c, bytes, device_id);
+
+  // LOGIC 2: Memory Advice (Hints) -> "Tell driver HOW data is used"
+  // 'a' and 'b' are Read-Only for the Kernel.
+  // 'SetReadMostly' tells the driver: "This data won't be modified soon".
+  // Benefit: On some architectures (like Pascal+), this allows the driver to 
+  // duplicate the data (keep a copy on CPU and create a copy on GPU), 
+  // preventing thrashing if both try to read it later.
+  cudaMemAdvise(a, bytes, cudaMemAdviseSetReadMostly, device_id);
+  cudaMemAdvise(b, bytes, cudaMemAdviseSetReadMostly, device_id);
+
+  // Note: We DO NOT set 'PreferredLocation' to CPU here, because we WANT 
+  // the data to migrate to the GPU for high-speed access.
+
+  // 3. Launch Kernel
   int BLOCK_SIZE = 1 << 10;
-
-  // CTAs per Grid
   int GRID_SIZE = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-  // Call CUDA kernel
+  
+  // Launch occurs on the default stream.
+  // The prefetches above were also on the default stream, so they are guaranteed
+  // to finish BEFORE the kernel starts.
   vectorAdd<<<GRID_SIZE, BLOCK_SIZE>>>(a, b, c, N);
 
-  // Wait for all previous operations before using values
-  // We need this because we don't get the implicit synchronization of
-  // cudaMemcpy like in the original example
+  // 4. Synchronization
+  // CPU must wait for GPU to finish.
   cudaDeviceSynchronize();
 
-  // Prefetch to the host (CPU)
+  // =============================================================
+  // PHASE 3: Optimization for Verification (CPU Side)
+  // =============================================================
+  
+  // Logic: Now we need the data back on the CPU for the 'assert' loop.
+  // 1. We need 'c' (the result).
+  // 2. We need 'a' and 'b' (to check the math).
+  
+  // Prefetch everything back to CPU device (cudaCpuDeviceId).
+  // If we skip this, the CPU will trigger page faults when reading c[i], a[i], b[i].
+  // Bulk prefetching is faster than individual page faults.
   cudaMemPrefetchAsync(a, bytes, cudaCpuDeviceId);
   cudaMemPrefetchAsync(b, bytes, cudaCpuDeviceId);
   cudaMemPrefetchAsync(c, bytes, cudaCpuDeviceId);
 
-  // Verify the result on the CPU
+  // 5. Verification
   for (int i = 0; i < N; i++) {
     assert(c[i] == a[i] + b[i]);
   }
 
-  // Free unified memory (same as memory allocated with cudaMalloc)
+  // 6. Cleanup
+  // Important: Remove advice (optional but clean) and Free
+  cudaMemAdvise(a, bytes, cudaMemAdviseUnsetReadMostly, device_id);
+  cudaMemAdvise(b, bytes, cudaMemAdviseUnsetReadMostly, device_id);
+  
   cudaFree(a);
   cudaFree(b);
   cudaFree(c);
