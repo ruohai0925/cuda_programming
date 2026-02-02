@@ -259,3 +259,15 @@ paket-files/
 # Python Tools for Visual Studio (PTVS)
 __pycache__/
 *.pyc
+
+learning_notes
+
+# CUDA compiled executables
+**/vectorAdd
+**/vectorAdd_*
+**/mmul
+**/sumReduction
+**/histogram
+**/convolution
+**/convolution_*
+**/*_cublas

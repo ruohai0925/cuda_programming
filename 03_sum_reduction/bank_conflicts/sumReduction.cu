@@ -1,89 +1,107 @@
-// This program performs sum reduction with an optimization
-// removing warp divergence
-// By: Nick from CoffeeBeforeArch
+// CUDA Sum Reduction - Optimized (No Divergence / No Modulo)
+// Original By: Nick from CoffeeBeforeArch
+// Updated by: ZDSJTU
 
-#include <algorithm>
-#include <cassert>
-#include <cstdlib>
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <iostream>
-#include <numeric>
 #include <vector>
+#include <numeric>
+#include <algorithm>
+#include <assert.h>
 
 using std::accumulate;
-using std::cout;
 using std::generate;
+using std::cout;
 using std::vector;
 
 #define SHMEM_SIZE 256
 
 __global__ void sumReduction(int *v, int *v_r) {
-  // Allocate shared memory
-  __shared__ int partial_sum[SHMEM_SIZE];
+    // 1. Shared Memory Allocation
+    __shared__ int partial_sum[SHMEM_SIZE];
 
-  // Calculate thread ID
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
-  // Load elements into shared memory
-  partial_sum[threadIdx.x] = v[tid];
-  __syncthreads();
-
-  // Increase the stride of the access until we exceed the CTA dimensions
-  for (int s = 1; s < blockDim.x; s *= 2) {
-    // Change the indexing to be sequential threads
-    int index = 2 * s * threadIdx.x;
-
-    // Each thread does work unless the index goes off the block
-    if (index < blockDim.x) {
-      partial_sum[index] += partial_sum[index + s];
-    }
+    // 2. Load Data (Global -> Shared)
+    // No change here. Linear loading is efficient.
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    partial_sum[threadIdx.x] = v[tid];
+    
     __syncthreads();
-  }
 
-  // Let the thread 0 for this block write it's result to main memory
-  // Result is inexed by this block
-  if (threadIdx.x == 0) {
-    v_r[blockIdx.x] = partial_sum[0];
-  }
+    // 3. Optimized Reduction Loop
+    // ---------------------------
+    // OLD (Naive): 
+    // for (int s = 1; s < blockDim.x; s *= 2) {
+    //     if (threadIdx.x % (2 * s) == 0) ...
+    // }
+    
+    // NEW (Sequential):
+    // s doubles: 1, 2, 4, 8...
+    for (int s = 1; s < blockDim.x; s *= 2) {
+        
+        // MAPPING STRATEGY:
+        // Instead of checking if *this* thread is a multiple of s,
+        // we map threadIdx.x to a specific location in the array.
+        //
+        // Example (s=1):
+        // Thread 0 -> index = 0. Adds partial_sum[0] + partial_sum[1]
+        // Thread 1 -> index = 2. Adds partial_sum[2] + partial_sum[3]
+        // Thread 2 -> index = 4. Adds partial_sum[4] + partial_sum[5]
+        // ...
+        // Notice threads 0, 1, 2 are CONTINUOUS. No gaps!
+        
+        int index = 2 * s * threadIdx.x;
+
+        // BOUNDARY CHECK:
+        // Only threads whose calculated index fits in the block do work.
+        // As 's' grows, 'index' grows fast, so fewer threads qualify.
+        // Eventually, only Thread 0 qualifies.
+        if (index < blockDim.x) {
+            partial_sum[index] += partial_sum[index + s];
+        }
+
+        __syncthreads();
+    }
+
+    // 4. Write Result
+    if (threadIdx.x == 0) {
+        v_r[blockIdx.x] = partial_sum[0];
+    }
 }
 
 int main() {
-  // Vector size
-  int N = 1 << 16;
-  size_t bytes = N * sizeof(int);
+    int N = 1 << 16; 
+    size_t bytes_input = N * sizeof(int);
 
-  // Host data
-  vector<int> h_v(N);
-  vector<int> h_v_r(N);
+    const int TB_SIZE = 256;
+    int GRID_SIZE = N / TB_SIZE;
+    size_t bytes_partial = GRID_SIZE * sizeof(int); // Optimized size
 
-  // Initialize the input data
-  generate(begin(h_v), end(h_v), []() { return rand() % 10; });
+    vector<int> h_v(N);
+    vector<int> h_v_r(GRID_SIZE);
 
-  // Allocate device memory
-  int *d_v, *d_v_r;
-  cudaMalloc(&d_v, bytes);
-  cudaMalloc(&d_v_r, bytes);
+    generate(begin(h_v), end(h_v), [](){ return rand() % 10; });
 
-  // Copy to device
-  cudaMemcpy(d_v, h_v.data(), bytes, cudaMemcpyHostToDevice);
+    int *d_v, *d_v_r;
+    cudaMalloc(&d_v, bytes_input);
+    cudaMalloc(&d_v_r, bytes_partial);
 
-  // TB Size
-  const int TB_SIZE = 256;
+    cudaMemcpy(d_v, h_v.data(), bytes_input, cudaMemcpyHostToDevice);
 
-  // Grid Size (No padding)
-  int GRID_SIZE = N / TB_SIZE;
+    // Launch 1
+    sumReduction<<<GRID_SIZE, TB_SIZE>>>(d_v, d_v_r);
+    // Launch 2
+    sumReduction<<<1, GRID_SIZE>>> (d_v_r, d_v_r);
 
-  // Call kernels
-  sumReduction<<<GRID_SIZE, TB_SIZE>>>(d_v, d_v_r);
+    cudaMemcpy(h_v_r.data(), d_v_r, bytes_partial, cudaMemcpyDeviceToHost);
 
-  sumReduction<<<1, TB_SIZE>>>(d_v_r, d_v_r);
+    assert(h_v_r[0] == std::accumulate(begin(h_v), end(h_v), 0));
+    cout << "COMPLETED SUCCESSFULLY\n";
 
-  // Copy to host;
-  cudaMemcpy(h_v_r.data(), d_v_r, bytes, cudaMemcpyDeviceToHost);
+    cudaFree(d_v);
+    cudaFree(d_v_r);
 
-  // Print the result
-  assert(h_v_r[0] == std::accumulate(begin(h_v), end(h_v), 0));
-
-  cout << "COMPLETED SUCCESSFULLY\n";
-
-  return 0;
+    return 0;
 }

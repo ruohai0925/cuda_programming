@@ -1,112 +1,127 @@
-// This program performs sum reduction with an optimization
-// removing warp bank conflicts
-// By: Nick from CoffeeBeforeArch
+// CUDA Sum Reduction - Step 5: Unroll Last Warp
+// Original By: Nick from CoffeeBeforeArch
+// Refactored & Annotated by: ZDSJTU
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <iostream>
+#include <vector>
+#include <numeric>
+#include <algorithm>
 #include <assert.h>
-#include <math.h>
 
-#define SIZE 256
-#define SHMEM_SIZE 256 * 4
+using std::accumulate;
+using std::generate;
+using std::cout;
+using std::vector;
 
-// For last iteration (saves useless work)
-// Use volatile to prevent caching in registers (compiler optimization)
-// No __syncthreads() necessary!
-__device__ void warpReduce(volatile int* shmem_ptr, int t) {
-	shmem_ptr[t] += shmem_ptr[t + 32];
-	shmem_ptr[t] += shmem_ptr[t + 16];
-	shmem_ptr[t] += shmem_ptr[t + 8];
-	shmem_ptr[t] += shmem_ptr[t + 4];
-	shmem_ptr[t] += shmem_ptr[t + 2];
-	shmem_ptr[t] += shmem_ptr[t + 1];
+#define SHMEM_SIZE 256
+
+// -----------------------------------------------------------------------------
+// DEVICE FUNCTION: warpReduce
+// -----------------------------------------------------------------------------
+// This function handles the final reduction for the last 32 threads (Warp 0).
+// Because we are within a single warp, we do not need __syncthreads().
+//
+// CRITICAL: 'volatile' is needed!
+// It prevents the compiler from caching 'v[tid]' in registers.
+// It forces the threads to write partially calculated sums back to Shared Memory
+// immediately, so other threads (e.g., tid 0 reading tid 16's result) see the update.
+// -----------------------------------------------------------------------------
+__device__ void warpReduce(volatile int* v, int tid) {
+    // Unrolled loop. No 'for', no 'if', no 'barrier'.
+    // Just raw instruction stream.
+    // Logic:
+    // v[tid] += v[tid + 32]; (Pre-condition: s=64 finished)
+    // v[tid] += v[tid + 16];
+    // ...
+    // v[tid] += v[tid + 1];
+    
+    // Note: We don't need bounds checks (tid < 32) here because 
+    // this function is ONLY called by the first 32 threads.
+    
+    v[tid] += v[tid + 32];
+    v[tid] += v[tid + 16];
+    v[tid] += v[tid + 8];
+    v[tid] += v[tid + 4];
+    v[tid] += v[tid + 2];
+    v[tid] += v[tid + 1];
 }
 
-__global__ void sum_reduction(int *v, int *v_r) {
-	// Allocate shared memory
-	__shared__ int partial_sum[SHMEM_SIZE];
+// -----------------------------------------------------------------------------
+// KERNEL: sumReductionUnroll
+// -----------------------------------------------------------------------------
+__global__ void sumReductionUnroll(int *v, int *v_r) {
+    // 1. Shared Memory
+    __shared__ int partial_sum[SHMEM_SIZE];
 
-	// Calculate thread ID
-	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    // 2. Load & Double Add (Same as V4)
+    int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+    partial_sum[threadIdx.x] = v[i] + v[i + blockDim.x];
+    __syncthreads();
 
-	// Load elements AND do first add of reduction
-	// Vector now 2x as long as number of threads, so scale i
-	int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+    // 3. The Reduction Loop
+    // ---------------------
+    // IMPORTANT CHANGE: We stop the loop when s <= 32.
+    // Because beyond that point, only Warp 0 is active.
+    for (int s = blockDim.x / 2; s > 32; s >>= 1) {
+        if (threadIdx.x < s) {
+            partial_sum[threadIdx.x] += partial_sum[threadIdx.x + s];
+        }
+        __syncthreads();
+    }
 
-	// Store first partial result instead of just the elements
-	partial_sum[threadIdx.x] = v[i] + v[i + blockDim.x];
-	__syncthreads();
+    // 4. Hand over to Warp Reduce (The Last 32 Threads)
+    // -------------------------------------------------
+    // Only the first warp (tid 0-31) enters here.
+    if (threadIdx.x < 32) {
+        warpReduce(partial_sum, threadIdx.x);
+    }
 
-	// Start at 1/2 block stride and divide by two each iteration
-	// Stop early (call device function instead)
-	for (int s = blockDim.x / 2; s > 32; s >>= 1) {
-		// Each thread does work unless it is further than the stride
-		if (threadIdx.x < s) {
-			partial_sum[threadIdx.x] += partial_sum[threadIdx.x + s];
-		}
-		__syncthreads();
-	}
-
-	if (threadIdx.x < 32) {
-		warpReduce(partial_sum, threadIdx.x);
-	}
-
-	// Let the thread 0 for this block write it's result to main memory
-	// Result is inexed by this block
-	if (threadIdx.x == 0) {
-		v_r[blockIdx.x] = partial_sum[0];
-	}
-}
-
-void initialize_vector(int *v, int n) {
-	for (int i = 0; i < n; i++) {
-		v[i] = 1;//rand() % 10;
-	}
+    // 5. Write Result
+    if (threadIdx.x == 0) {
+        v_r[blockIdx.x] = partial_sum[0];
+    }
 }
 
 int main() {
-	// Vector size
-	int n = 1 << 16;
-	size_t bytes = n * sizeof(int);
+    // Setup (Identical to Version 4)
+    int N = 1 << 16; 
+    size_t bytes_input = N * sizeof(int);
 
-	// Original vector and result vector
-	int *h_v, *h_v_r;
-	int *d_v, *d_v_r;
+    const int TB_SIZE = 256;
+    // Remember V4 optimization: Halve the grid size
+    int GRID_SIZE = N / (TB_SIZE * 2); 
+    size_t bytes_partial = GRID_SIZE * sizeof(int);
 
-	// Allocate memory
-	h_v = (int*)malloc(bytes);
-	h_v_r = (int*)malloc(bytes);
-	cudaMalloc(&d_v, bytes);
-	cudaMalloc(&d_v_r, bytes);
+    vector<int> h_v(N);
+    vector<int> h_v_r(GRID_SIZE);
+    generate(begin(h_v), end(h_v), [](){ return 1; });
 
-	// Initialize vector
-	initialize_vector(h_v, n);
+    int *d_v, *d_v_r;
+    cudaMalloc(&d_v, bytes_input);
+    cudaMalloc(&d_v_r, bytes_partial);
 
-	// Copy to device
-	cudaMemcpy(d_v, h_v, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_v, h_v.data(), bytes_input, cudaMemcpyHostToDevice);
 
-	// TB Size
-	int TB_SIZE = SIZE;
+    // Launch 1
+    sumReductionUnroll<<<GRID_SIZE, TB_SIZE>>>(d_v, d_v_r);
 
-	// Grid Size (cut in half) (No padding)
-	int GRID_SIZE = n / TB_SIZE / 2;
+    // Launch 2 (Finish the job)
+    // Reduce the partial sums.
+    // Grid Size 128 -> handled by 1 block with 64 threads (covering 128 elements)
+    sumReductionUnroll<<<1, 64>>>(d_v_r, d_v_r);
 
-	// Call kernel
-	sum_reduction << <GRID_SIZE, TB_SIZE >> > (d_v, d_v_r);
+    cudaMemcpy(h_v_r.data(), d_v_r, bytes_partial, cudaMemcpyDeviceToHost);
+    
+    assert(h_v_r[0] == std::accumulate(begin(h_v), end(h_v), 0));
 
-	sum_reduction << <1, TB_SIZE >> > (d_v_r, d_v_r);
+    cout << "COMPLETED SUCCESSFULLY\n";
 
-	// Copy to host;
-	cudaMemcpy(h_v_r, d_v_r, bytes, cudaMemcpyDeviceToHost);
+    cudaFree(d_v);
+    cudaFree(d_v_r);
 
-	// Print the result
-	//printf("Accumulated result is %d \n", h_v_r[0]);
-	//scanf("Press enter to continue: ");
-	assert(h_v_r[0] == 65536);
-
-	printf("COMPLETED SUCCESSFULLY\n");
-
-	return 0;
+    return 0;
 }
