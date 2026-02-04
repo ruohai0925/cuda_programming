@@ -1,6 +1,6 @@
 // CUDA Sum Reduction - Step 5: Unroll Last Warp
 // Original By: Nick from CoffeeBeforeArch
-// Refactored & Annotated by: ZDSJTU
+// Updated by: ZDSJTU
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>

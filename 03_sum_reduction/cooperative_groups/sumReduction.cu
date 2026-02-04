@@ -1,107 +1,161 @@
-// This program performs sum reduction with an optimization
-// removing warp bank conflicts
-// By: Nick from CoffeeBeforeArch
+// CUDA Sum Reduction - Step 6: Vectorized & Atomic (Comparison Version)
+// Based on V5, enhanced with int4 loads and atomicAdd.
+// Updated by: ZDSJTU
+// https://developer.nvidia.com/blog/cooperative-groups/
+// https://developer.nvidia.com/blog/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
+// https://developer.nvidia.com/blog/cuda-pro-tip-increase-performance-with-vectorized-memory-access/
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
-#include <cooperative_groups.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <assert.h>
-#include <math.h>
 #include <iostream>
+#include <vector>
+#include <numeric>
+#include <algorithm>
+#include <assert.h>
+#include <cooperative_groups.h> // Required for modern sync
 
 using namespace cooperative_groups;
+using std::accumulate;
+using std::generate;
+using std::cout;
+using std::vector;
 
-// Reduces a thread group to a single element
-__device__ int reduce_sum(thread_group g, int *temp, int val){
-	int lane = g.thread_rank();
+#define SHMEM_SIZE 256
 
-	// Each thread adds its partial sum[i] to sum[lane+i]
-	for (int i = g.size() / 2; i > 0; i /= 2){
-		temp[lane] = val;
-		// wait for all threads to store
-		g.sync();
-		if (lane < i) {
-			val += temp[lane + i];
-		}
-		// wait for all threads to load
-		g.sync();
-	}
-	// note: only thread 0 will return full sum
-	return val; 
+// -----------------------------------------------------------------------------
+// DEVICE FUNCTION: warpReduce (EXACTLY THE SAME AS V5)
+// -----------------------------------------------------------------------------
+// We reuse the exact same unrolling logic from V5 to keep the comparison fair.
+// -----------------------------------------------------------------------------
+__device__ void warpReduce(volatile int* v, int tid) {
+    v[tid] += v[tid + 32];
+    v[tid] += v[tid + 16];
+    v[tid] += v[tid + 8];
+    v[tid] += v[tid + 4];
+    v[tid] += v[tid + 2];
+    v[tid] += v[tid + 1];
 }
 
-// Creates partials sums from the original array
-__device__ int thread_sum(int *input, int n){
-	int sum = 0;
-	int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	for (int i = tid; i < n / 4; i += blockDim.x * gridDim.x){
-		// Cast as int4 
-		int4 in = ((int4*)input)[i];
-		sum += in.x + in.y + in.z + in.w;
-	}
-	return sum;
-}
+// -----------------------------------------------------------------------------
+// KERNEL: sumReductionV6
+// -----------------------------------------------------------------------------
+// DIFFERENCE FROM V5:
+// 1. Input: Takes 'n' (array size) because we use a Grid-Stride Loop.
+// 2. Load: Uses 'int4' (Vectorized Load) instead of standard int load.
+// 3. Output: Uses 'atomicAdd' to a single scalar, not an array.
+// -----------------------------------------------------------------------------
+__global__ void sumReductionV6(int *v, int *v_r, int n) {
+    // 1. Shared Memory (Same as V5)
+    __shared__ int partial_sum[SHMEM_SIZE];
+    
+    // Cooperative Groups handle (replaces raw __syncthreads for style, 
+    // though __syncthreads works too)
+    thread_block g = this_thread_block();
 
-__global__ void sum_reduction(int *sum, int *input, int n){
-	// Create partial sums from the array
-	int my_sum = thread_sum(input, n);
+    unsigned int tid = threadIdx.x;
 
-	// Dynamic shared memory allocation
-	extern __shared__ int temp[];
+    // =========================================================================
+    // DIFFERENCE 1: Grid-Stride Loop with Vectorized Loading (int4)
+    // =========================================================================
+    // In V5, we calculated one global index 'i'.
+    // In V6, we loop through the array processing 4 integers at a time.
+    // This allows the kernel to handle ANY array size 'n' with a fixed grid size.
+    
+    int sum = 0;
+    
+    // Cast input to int4* to load 128 bits (4 ints) per instruction
+    int4* v_vec = (int4*)v; 
+    int num_vec_elements = n / 4; // Assuming n is multiple of 4
+
+    // Grid Stride: Total number of threads * 4 (since each thread does int4)
+    // Actually, strictly speaking for grid stride on int4 types:
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+
+    for (int i = idx; i < num_vec_elements; i += stride) {
+        int4 loaded = v_vec[i]; // Single instruction LD.E.128
+        sum += loaded.x + loaded.y + loaded.z + loaded.w;
+    }
+    // Blocks 0 - 63;
+	// Blocks 64 - 127;
 	
-	// Identifier for a TB
-	auto g = this_thread_block();
-	
-	// Reudce each TB
-	int block_sum = reduce_sum(g, temp, my_sum);
 
-	// Collect the partial result from each TB
-	if (g.thread_rank() == 0) {
-		atomicAdd(sum, block_sum);
-	}
-}
+    // Store local sum to shared memory
+    partial_sum[tid] = sum;
+    
+    g.sync(); // Equivalent to __syncthreads();
 
-void initialize_vector(int *v, int n) {
-	for (int i = 0; i < n; i++) {
-		v[i] = 1;//rand() % 10;
-	}
+    // =========================================================================
+    // PART 2: Reduction Loop (EXACTLY THE SAME AS V5)
+    // =========================================================================
+    // We use the exact same logic: fold until 32, then unroll.
+    
+    // Fold
+    for (int s = blockDim.x / 2; s > 32; s >>= 1) {
+        if (tid < s) {
+            partial_sum[tid] += partial_sum[tid + s];
+        }
+        g.sync();
+    }
+
+    // Unroll Last Warp (Same helper function as V5)
+    if (tid < 32) {
+        warpReduce(partial_sum, tid);
+    }
+
+    // =========================================================================
+    // DIFFERENCE 2: Atomic Write Back
+    // =========================================================================
+    // V5: v_r[blockIdx.x] = partial_sum[0]; (Writes to array)
+    // V6: atomicAdd(v_r, partial_sum[0]);   (Aggregates to single scalar)
+    
+    if (tid == 0) {
+        atomicAdd(v_r, partial_sum[0]);
+    }
 }
 
 int main() {
-	// Vector size
-	int n = 1 << 13;
-	size_t bytes = n * sizeof(int);
+    // 1. Setup Data (Same N as V5 for fair comparison)
+    int N = 1 << 16; 
+    size_t bytes_input = N * sizeof(int);
 
-	// Original vector and result vector
-	int *sum;
-	int *data;
+    const int TB_SIZE = 256;
+    int GRID_SIZE = N / (TB_SIZE * 2); 
+    vector<int> h_v(N);
+	int h_v_r; // Single scalar result
+    generate(begin(h_v), end(h_v), [](){ return 1; });
 
-	// Allocate using unified memory
-	cudaMallocManaged(&sum, sizeof(int));
-	cudaMallocManaged(&data, bytes);
+    // DIFFERENCE: v_r is only 1 integer (4 bytes), not an array!
+    int *d_v, *d_v_r;
+    cudaMalloc(&d_v, bytes_input);
+    cudaMalloc(&d_v_r, sizeof(int)); // Only 1 int needed for Atomic Add
 
-	// Initialize vector
-	initialize_vector(data, n);
+    // Initialize result to 0 on GPU (Crucial for atomicAdd)
+    int h_result_init = 0;
+    cudaMemcpy(d_v_r, &h_result_init, sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_v, h_v.data(), bytes_input, cudaMemcpyHostToDevice);
 
-	// TB Size
-	int TB_SIZE = 256;
+    // 3. Launch Configuration
+    // DIFFERENCE: V6 uses a fixed number of blocks (e.g., 128 or 256)
+    // because the Grid-Stride Loop handles the full array size internally.
+    // Let's use 128 blocks to match the V5 Grid Size, keeping variables controlled.
 
-	// Grid Size (cut in half)
-	int GRID_SIZE = (n + TB_SIZE - 1) / TB_SIZE;
 
-	// Call kernel with dynamic shared memory (Could decrease this to fit larger data)
-	sum_reduction <<<GRID_SIZE, TB_SIZE, n * sizeof(int)>>> (sum, data, n);
+    // 4. Single Kernel Launch (V6 Style)
+    // No need for a second launch.
+    sumReductionV6<<<GRID_SIZE, TB_SIZE>>>(d_v, d_v_r, N);
 
-	// Synchronize the kernel
-	cudaDeviceSynchronize();
+    // 5. Verify
+    cudaMemcpy(&h_v_r, d_v_r, sizeof(int), cudaMemcpyDeviceToHost);
+    
+    assert(h_v_r == std::accumulate(begin(h_v), end(h_v), 0));
 
-	//printf("Accumulated result is %d \n", sum[0]);
-	//scanf("Press enter to continue: ");
-    assert(*sum == 8192);
+    cout << "COMPLETED SUCCESSFULLY\n";
 
-	printf("COMPLETED SUCCESSFULLY\n");
+    cudaFree(d_v);
+    cudaFree(d_v_r);
 
-	return 0;
+    return 0;
 }
