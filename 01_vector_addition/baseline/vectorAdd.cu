@@ -113,15 +113,15 @@ int main() {
   // by NUM_THREADS (e.g. N = 1025, NUM_THREADS = 1024)
   // Formula: (N + NUM_THREADS - 1) / NUM_THREADS ensures we have enough threads
   //          by rounding up the division (ceiling division).
-  // similar to: ceil(N / NUM_THREADS)
-  // ceil(N / NUM_THREADS): Rounds up the division to the nearest integer.
+  // similar to: ceil((float)N / NUM_THREADS)
+  // ceil((float)N / NUM_THREADS): Rounds up the division to the nearest integer.
   //                        This ensures we have enough threads to cover all elements.
   //                        For example, if N = 1025 and NUM_THREADS = 1024,
-  //                        ceil(1025 / 1024) = 2, so we need 2 CTAs.
+  //                        ceil((float)1025 / 1024) = 2, so we need 2 CTAs.
   //                        If N = 1024 and NUM_THREADS = 1024,
-  //                        ceil(1024 / 1024) = 1, so we need 1 CTA.
+  //                        ceil((float)1024 / 1024) = 1, so we need 1 CTA.
   //                        If N = 1023 and NUM_THREADS = 1024,
-  //                        ceil(1023 / 1024) = 1, so we need 1 CTA.
+  //                        ceil((float)1023 / 1024) = 1, so we need 1 CTA.
   int NUM_BLOCKS = (N + NUM_THREADS - 1) / NUM_THREADS;
   std::cout << "NUM_BLOCKS: " << NUM_BLOCKS << std::endl;
   std::cout << "NUM_THREADS: " << NUM_THREADS << std::endl;
