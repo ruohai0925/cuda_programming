@@ -2,6 +2,9 @@
 // Based on NVIDIA Developer Blogs
 // Updated by: ZDSJTU
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 #include <algorithm>
 #include <cassert>
 #include <iostream>

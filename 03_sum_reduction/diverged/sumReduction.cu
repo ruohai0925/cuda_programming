@@ -2,6 +2,8 @@
 // By: Nick from CoffeeBeforeArch
 // Updated by: ZDSJTU
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 #include <cstdlib>
 #include <iostream>
 #include <vector>

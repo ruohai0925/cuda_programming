@@ -3,6 +3,9 @@
 // By: Nick from CoffeeBeforeArch & Gem_GPU
 // Updated by: ZDSJTU
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 #include <stdio.h>
 #include <cassert>
 #include <iostream>

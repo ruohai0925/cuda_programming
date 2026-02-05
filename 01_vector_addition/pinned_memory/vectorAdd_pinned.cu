@@ -2,6 +2,9 @@
 // By: Nick from CoffeeBeforeArch
 // Updated by: ZDSJTU
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>

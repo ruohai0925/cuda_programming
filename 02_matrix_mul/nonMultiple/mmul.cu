@@ -1,6 +1,9 @@
 // This program computes matrix multiplication using shared memory tiling
 // By: Nick from CoffeeBeforeArch
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>

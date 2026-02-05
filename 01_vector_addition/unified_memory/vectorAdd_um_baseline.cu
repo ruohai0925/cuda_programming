@@ -21,6 +21,9 @@
 // - Baseline: Separate host (CPU) and device (GPU) memory + manual cudaMemcpy()
 // - Unified Memory: Single memory space + automatic data migration
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 #include <stdio.h>
 #include <cassert>
 #include <iostream>

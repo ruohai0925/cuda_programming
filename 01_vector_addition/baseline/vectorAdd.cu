@@ -6,6 +6,9 @@
 // 1. Read the codes and Explain GPU and C++ knowledge;
 // 2. Run the codes and check the results;
 
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 #include <algorithm>
 #include <cassert>
 #include <iostream>
@@ -73,8 +76,13 @@ int main() {
   a.reserve(N);
   std::vector<int> b;
   b.reserve(N);
-  std::vector<int> c;
-  c.reserve(N);
+  //std::vector<int> c;
+  //c.reserve(N);
+  std::vector<int> c(N);
+  //or
+  //std::vector<int> c; 
+  //c.resize(N)
+
 
   // Initialize random numbers in each array
   // rand(): C standard library function that generates pseudo-random integers.
