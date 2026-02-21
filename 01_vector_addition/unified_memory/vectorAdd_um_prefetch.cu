@@ -22,7 +22,7 @@ __global__ void vectorAdd(const int *a, const int *b, int *c, int N) {
 
 int main() {
   // 1. Setup Parameters
-  const int N = 1 << 16;
+  const int N = 1 << 26;
   size_t bytes = N * sizeof(int);
   int device_id = 0;
   
@@ -83,6 +83,10 @@ int main() {
   // The prefetches above were also on the default stream, so they are guaranteed
   // to finish BEFORE the kernel starts.
   vectorAdd<<<GRID_SIZE, BLOCK_SIZE>>>(a, b, c, N);
+
+  for (int i = 0; i < 100; i++) {
+    vectorAdd<<<GRID_SIZE, BLOCK_SIZE>>>(a, b, c, N);
+  }
 
   // 4. Synchronization
   // CPU must wait for GPU to finish.

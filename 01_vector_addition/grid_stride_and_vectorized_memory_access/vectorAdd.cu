@@ -98,12 +98,14 @@ void verify_result(std::vector<int> &a, std::vector<int> &b, std::vector<int> &c
 int main() {
     // Use a large N to see performance benefits (2^20 = ~1 million elements)
     // Note: For Vectorized kernel, N must be divisible by 4.
-    constexpr int N = 1 << 16; // 65536 elements
+    constexpr int N = 1 << 26; // 67108864 elements
     constexpr size_t bytes = sizeof(int) * N;
 
-    std::vector<int> a; a.reserve(N);
-    std::vector<int> b; b.reserve(N);
-    std::vector<int> c; c.reserve(N);
+    std::vector<int> a;
+    a.reserve(N);
+    std::vector<int> b;
+    b.reserve(N);
+    std::vector<int> c(N);
 
     for (int i = 0; i < N; i++) {
         a.push_back(rand() % 100);
@@ -119,7 +121,7 @@ int main() {
     cudaMemcpy(d_a, a.data(), bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(d_b, b.data(), bytes, cudaMemcpyHostToDevice);
 
-    int NUM_THREADS = 256;
+    int NUM_THREADS = 1 << 10;  // 1 << 10 = 2^10 = 1024 threads per CTA
 
     // -----------------------------------------------------------------
     // Configuration for Grid Stride
@@ -132,11 +134,14 @@ int main() {
     int NUM_BLOCKS = 128; // e.g., 32 SMs * 4 blocks per SM
 
     std::cout << "Launching Grid Stride Kernel..." << std::endl;
-    std::cout << "Grid Size: " << NUM_BLOCKS << ", Block Size: " << NUM_THREADS << std::endl;
-    
+    std::cout << "NUM_BLOCKS: " << NUM_BLOCKS << std::endl;
+    std::cout << "NUM_THREADS: " << NUM_THREADS << std::endl;
     // Launch Kernel 1
     vectorAddGridStride<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
-    
+    for (int i = 0; i < 100; i++) {
+        vectorAddGridStride<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
+    }
+
     cudaMemcpy(c.data(), d_c, bytes, cudaMemcpyDeviceToHost);
     verify_result(a, b, c);
     std::cout << "Grid Stride Kernel Verified." << std::endl;
@@ -148,13 +153,17 @@ int main() {
     // Launch Kernel 2
     // Note: N must be divisible by 4 for this simplified kernel.
     vectorAddVectorized<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
-
+    for (int i = 0; i < 100; i++) {
+        vectorAddVectorized<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
+    }
     cudaMemcpy(c.data(), d_c, bytes, cudaMemcpyDeviceToHost);
     verify_result(a, b, c);
     std::cout << "Vectorized Kernel Verified." << std::endl;
 
-    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
-    std::cout << "\nCOMPLETED SUCCESSFULLY" << std::endl;
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
+    std::cout << "COMPLETED SUCCESSFULLY\n" << std::endl;
 
     return 0;
 }

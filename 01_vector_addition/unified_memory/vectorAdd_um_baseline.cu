@@ -47,8 +47,8 @@ __global__ void vectorAdd(int *a, int *b, int *c, int N) {
 }
 
 int main() {
-  // Array size of 2^16 (65536 elements)
-  const int N = 1 << 16;
+
+  const int N = 1 << 26;
   size_t bytes = N * sizeof(int);
 
   // Declare unified memory pointers
@@ -87,6 +87,10 @@ int main() {
   //       migrates the memory pages to the GPU if needed.
   //       No cudaMemcpy() needed! This is a major simplification.
   vectorAdd<<<GRID_SIZE, BLOCK_SIZE>>>(a, b, c, N);
+
+  for (int i = 0; i < 100; i++) {
+    vectorAdd<<<GRID_SIZE, BLOCK_SIZE>>>(a, b, c, N);
+  }
 
   // CRITICAL: cudaDeviceSynchronize() - Wait for GPU kernel to complete
   // ====================================================================

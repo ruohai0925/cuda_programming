@@ -6,6 +6,9 @@
 // 1. Read the codes and Explain GPU and C++ knowledge;
 // 2. Run the codes and check the results;
 
+// nvcc vectorAdd.cu -o vectorAdd -arch=sm_86
+// nsys profile --stats=true .\vectorAdd.exe
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
@@ -58,7 +61,7 @@ int main() {
   //            This allows the compiler to optimize and use N in contexts requiring
   //            compile-time constants (like template parameters or array sizes).
   //            The value cannot change during program execution.
-  constexpr int N = 1 << 16;  // 1 << 16 = 2^16 = 65536
+  constexpr int N = 1 << 26;  // 1 << 16 = 2^16 = 65536
   // size_t: Unsigned integer type used to represent sizes and counts in bytes.
   //         It's guaranteed to be large enough to hold the size of any object in memory.
   //         On 64-bit systems, it's typically 64 bits (unsigned long), on 32-bit systems, 32 bits.
@@ -138,6 +141,10 @@ int main() {
   // Kernel calls are asynchronous (the CPU program continues execution after
   // call, but no necessarily before the kernel finishes)
   vectorAdd<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
+
+  for(int i=0; i<100; i++) {
+      vectorAdd<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
+  }
 
   // Copy sum vector from device to host
   // cudaMemcpy is a synchronous operation, and waits for the prior kernel

@@ -84,9 +84,15 @@ int main() {
   // CTAs per Grid
   // We need to launch at LEAST as many threads as we have elements
   int NUM_BLOCKS = (N + NUM_THREADS - 1) / NUM_THREADS;
+  std::cout << "NUM_BLOCKS: " << NUM_BLOCKS << std::endl;
+  std::cout << "NUM_THREADS: " << NUM_THREADS << std::endl;
 
   // Launch the kernel on the GPU
   vectorAdd<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
+
+  for (int i = 0; i < 100; i++) {
+    vectorAdd<<<NUM_BLOCKS, NUM_THREADS>>>(d_a, d_b, d_c, N);
+  }
 
   // Copy sum vector from device to host
   // Again, copying back to pinned memory (h_c) is faster than pageable memory.

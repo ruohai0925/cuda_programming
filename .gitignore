@@ -271,3 +271,12 @@ learning_notes
 **/convolution
 **/convolution_*
 **/*_cublas
+
+# Nsys profile reports
+*.nsys-rep
+*.sqlite
+
+# Windows build artifacts (nvcc/linker)
+*.exe
+*.exp
+*.lib
