@@ -280,3 +280,10 @@ learning_notes
 *.exe
 *.exp
 *.lib
+
+# Misc runtime data / binaries
+*.dat
+*.asm
+misc/query_device/query_device
+misc/OpenACC/matrix_mul
+misc/clock/sum_reduction
