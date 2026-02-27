@@ -79,7 +79,7 @@ int main(){
         // If we want to allocate a matrix larger than this, the program will crash.
         // =================================================================================
         cout << "Global memory in GB: " <<
-            device_prop.totalGlobalMem / (1 << 30) << endl;
+            device_prop.totalGlobalMem / (1 << 20) << endl;
 
         // =================================================================================
         // KNOWLEDGE HINT 7: Execution Resources (The Muscle)

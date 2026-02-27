@@ -4,8 +4,10 @@
 // By: Nick from CoffeeBeforeArch
 // Updated by: ZDSJTU
 
+// https://developer.nvidia.com/hpc-sdk/releases/26.1
 // nvc++ -acc -gpu=cc89 -Minfo=accel -S matrix_mul.cpp -o matrix_mul.asm
 // nvc++ -acc -gpu=cc89 -Minfo=accel matrix_mul.cpp -o matrix_mul
+// 2376773 ns = 2.376773 ms for OpenACC vs. 1.71 ms for CUDA
 
 #include <stdlib.h>
 
